@@ -1,5 +1,5 @@
 const { Router } = require('express');
-const { verificarToken, soloAdmin } = require('../middlewares/auth.middleware');
+const { verificarToken, soloAdmin, soloAgente } = require('../middlewares/auth.middleware');
 const {
   obtenerPerfil, actualizarPerfil, cambiarPassword,
   listarUsuarios, obtenerUsuario, crearUsuario,
@@ -22,7 +22,7 @@ router.get('/agentes',                   listarAgentes);
 // Gestión de usuarios (solo admin)
 router.get('/',                          soloAdmin, listarUsuarios);
 router.get('/:id',                       soloAdmin, obtenerUsuario);
-router.post('/',                         soloAdmin, crearUsuario);
+router.post('/',                         soloAgente, crearUsuario);
 router.put('/:id',                       soloAdmin, actualizarUsuario);
 router.put('/:id/reset-password',        soloAdmin, resetPasswordAdmin);
 router.put('/:id/toggle-activo',         soloAdmin, toggleActivo);
