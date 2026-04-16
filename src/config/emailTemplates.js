@@ -148,4 +148,50 @@ const ticketCreadoTemplate = ({ nombre, numero_legible, titulo, descripcion, cat
 </html>
 `;
 
-module.exports = { resetPasswordTemplate, bienvenidaClienteTemplate, ticketCreadoTemplate };
+const nuevaRespuestaTemplate = ({ nombre, numero_legible, titulo, contenido, autor, ticketUrl = '#' }) => `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .header { background: #1a73e8; padding: 30px; text-align: center; }
+    .header h1 { color: #ffffff; margin: 0; font-size: 22px; }
+    .header p  { color: #d0e4ff; margin: 8px 0 0; font-size: 14px; }
+    .body { padding: 30px; color: #333333; }
+    .body p { line-height: 1.6; }
+    .ticket-ref { font-size: 13px; color: #666; margin-bottom: 20px; }
+    .respuesta-box { background: #f0f4ff; border-left: 4px solid #1a73e8; border-radius: 0 6px 6px 0; padding: 16px 20px; margin: 20px 0; }
+    .respuesta-box p { margin: 0; font-size: 15px; line-height: 1.7; color: #222; }
+    .autor { font-size: 12px; color: #888; margin-top: 10px; }
+    .btn { display: inline-block; margin-top: 24px; padding: 12px 28px; background: #1a73e8; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 15px; }
+    .footer { background: #f4f4f4; padding: 16px; text-align: center; font-size: 12px; color: #999999; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Servicios Integrales S.A.</h1>
+      <p>Nueva respuesta en tu ticket</p>
+    </div>
+    <div class="body">
+      <p>Hola, <strong>${nombre}</strong>.</p>
+      <p>Un agente ha respondido a tu solicitud de soporte.</p>
+      <p class="ticket-ref">Ticket: <strong>${numero_legible}</strong> — ${titulo}</p>
+      <div class="respuesta-box">
+        <p>${contenido}</p>
+        <p class="autor">— ${autor}</p>
+      </div>
+      <p>Puedes ver el hilo completo de tu solicitud accediendo a tu cuenta en la sección <strong>Mis Solicitudes</strong>.</p>
+      <a href="${ticketUrl}" class="btn">Ver mis solicitudes</a>
+    </div>
+    <div class="footer">
+      &copy; ${new Date().getFullYear()} Servicios Integrales S.A. — Sistema de Tickets
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+module.exports = { resetPasswordTemplate, bienvenidaClienteTemplate, ticketCreadoTemplate, nuevaRespuestaTemplate };
