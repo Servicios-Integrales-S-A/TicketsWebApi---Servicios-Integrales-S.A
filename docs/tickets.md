@@ -5,8 +5,7 @@
 
 ## Descripción General
 
-El módulo de tickets gestiona la creación de tickets de soporte desde múltiples canales.
-La asignación de agentes es automática (por menor carga activa) o manual según el rol y lo que se envíe.
+El módulo de tickets gestiona el ciclo de vida completo de los tickets de soporte: creación desde múltiples canales, listado con filtros y búsqueda por rol, consulta de detalle, y operaciones de gestión (cambio de estado, reasignación de agente y cambio de prioridad).
 
 ---
 
@@ -14,7 +13,7 @@ La asignación de agentes es automática (por menor carga activa) o manual segú
 
 | Archivo | Descripción |
 |---------|-------------|
-| `src/controllers/tickets.controller.js` | Lógica de creación de tickets |
+| `src/controllers/tickets.controller.js` | Lógica de todos los endpoints de tickets |
 | `src/controllers/reglas.controller.js` | Función `obtenerAgentePorMenorCarga` |
 | `src/routes/tickets.routes.js` | Definición de rutas |
 | `src/middlewares/auth.middleware.js` | Verificación de token JWT |
@@ -249,6 +248,232 @@ Cada creación de ticket genera entradas automáticas en `Historial_Tickets`:
 |-------------------|--------|
 | `creacion` | Siempre al crear el ticket |
 | `asignacion` | Solo si se asignó un agente. El detalle indica si fue manual o automática |
+
+---
+
+---
+
+## `GET /api/tickets`
+
+Lista tickets con filtros, búsqueda y paginación. La visibilidad es automática según el rol del token.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+### Visibilidad por rol
+
+| Rol | Qué ve |
+|-----|--------|
+| `cliente` | Solo sus propios tickets |
+| `agente` | Solo los tickets asignados a él |
+| `admin` | Todos los tickets |
+
+### Query params
+
+| Param | Tipo | Disponible para | Descripción |
+|-------|------|-----------------|-------------|
+| `estado` | string | Todos | Filtrar por estado: `abierto`, `en_progreso`, `resuelto`, `cerrado` |
+| `prioridad` | string | Todos | Filtrar por prioridad: `critico`, `alto`, `medio`, `bajo` |
+| `canal` | string | Todos | Filtrar por canal de origen |
+| `id_categoria` | UUID | Todos | Filtrar por categoría exacta |
+| `id_cliente` | UUID | Agente y Admin | Filtrar tickets de un cliente específico por UUID |
+| `id_agente` | UUID | Solo Admin | Filtrar tickets asignados a un agente específico por UUID |
+| `buscar` | string | Todos | Busca en título y número de ticket (ej: `TKT-00001`) |
+| `buscar_cliente` | string | Agente y Admin | Busca por nombre, apellido o email del cliente |
+| `buscar_agente` | string | Solo Admin | Busca por nombre, apellido o email del agente |
+| `page` | number | Todos | Página actual. Default: `1` |
+| `limit` | number | Todos | Registros por página. Default: `10` |
+
+> Los filtros `id_agente`, `buscar_cliente` y `buscar_agente` son ignorados si los envía un cliente. `id_agente` y `buscar_agente` son ignorados si los envía un agente.
+
+### Ejemplos
+
+```
+GET /api/tickets
+GET /api/tickets?estado=abierto&prioridad=critico
+GET /api/tickets?buscar=impresora&page=1&limit=5
+GET /api/tickets?buscar_cliente=juan&estado=en_progreso
+GET /api/tickets?buscar_agente=carlos&prioridad=alto
+GET /api/tickets?id_cliente=uuid&estado=abierto
+GET /api/tickets?id_agente=uuid&estado=en_progreso
+```
+
+### Respuesta exitosa `200`
+
+```json
+{
+  "datos": [
+    {
+      "id": "uuid-del-ticket",
+      "numero_legible": "TKT-00001",
+      "titulo": "Mi impresora no funciona",
+      "estado": "abierto",
+      "prioridad": "critico",
+      "canal": "web",
+      "creado_en": "2026-04-15T10:00:00.000Z",
+      "fecha_cierre": null,
+      "categoria": "Soporte Tecnico",
+      "cliente": "Juan Pérez",
+      "cliente_email": "juan@gmail.com",
+      "agente": "Carlos Mendoza"
+    }
+  ],
+  "paginacion": {
+    "total": 25,
+    "pagina": 1,
+    "limit": 10,
+    "paginas": 3
+  }
+}
+```
+
+Los resultados se ordenan por prioridad (crítico primero) y luego por fecha de creación descendente.
+
+---
+
+## `GET /api/tickets/:id`
+
+Retorna el detalle completo de un ticket. Aplica las mismas reglas de visibilidad por rol.
+
+**Params:**
+- `id` — UUID del ticket
+
+**Respuesta exitosa `200`:**
+```json
+{
+  "id": "uuid-del-ticket",
+  "numero_legible": "TKT-00001",
+  "titulo": "Mi impresora no funciona",
+  "descripcion": "La impresora no enciende desde esta mañana.",
+  "estado": "abierto",
+  "prioridad": "critico",
+  "canal": "web",
+  "creado_en": "2026-04-15T10:00:00.000Z",
+  "actualizado_en": null,
+  "fecha_cierre": null,
+  "id_cliente": "uuid",
+  "id_agente": "uuid",
+  "id_categoria": "uuid",
+  "categoria": "Soporte Tecnico",
+  "cliente_nombre": "Juan",
+  "cliente_apellido": "Pérez",
+  "cliente_email": "juan@gmail.com",
+  "agente_nombre": "Carlos",
+  "agente_apellido": "Mendoza",
+  "agente_email": "carlos@serviciosintegrales.com"
+}
+```
+
+**Respuestas de error:**
+
+| Código | Causa |
+|--------|-------|
+| `403` | El cliente o agente no tiene acceso a ese ticket |
+| `404` | Ticket no encontrado |
+| `500` | Error interno del servidor |
+
+---
+
+## `PUT /api/tickets/:id/estado`
+
+Cambia el estado de un ticket. Solo agente y admin.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{ "estado": "en_progreso" }
+```
+
+**Estados válidos:** `abierto`, `en_progreso`, `resuelto`, `cerrado`
+
+**Ciclo de vida esperado:**
+```
+abierto → en_progreso → resuelto → cerrado
+```
+
+> Al cambiar a `cerrado` se registra automáticamente la `fecha_cierre` del ticket.
+
+**Respuesta exitosa `200`:**
+```json
+{ "mensaje": "Estado actualizado a \"en_progreso\" correctamente." }
+```
+
+**Respuestas de error:**
+
+| Código | Causa |
+|--------|-------|
+| `400` | Estado no válido |
+| `400` | El ticket ya tiene ese estado |
+| `403` | Sin permisos (cliente) |
+| `404` | Ticket no encontrado |
+| `500` | Error interno del servidor |
+
+Registra en `Historial_Tickets` con acción `cambio_estado` y detalle del cambio (ej: `"Estado cambiado de \"abierto\" a \"en_progreso\""`).
+
+---
+
+## `PUT /api/tickets/:id/asignar`
+
+Asigna o reasigna un agente a un ticket. Solo agente y admin.
+
+**Body:**
+```json
+{ "id_agente": "uuid-del-agente" }
+```
+
+**Respuesta exitosa `200`:**
+```json
+{ "mensaje": "Agente asignado correctamente." }
+```
+
+**Respuestas de error:**
+
+| Código | Causa |
+|--------|-------|
+| `400` | `id_agente` no enviado |
+| `400` | El agente no existe o no tiene rol `agente` |
+| `403` | Sin permisos (cliente) |
+| `404` | Ticket no encontrado |
+| `500` | Error interno del servidor |
+
+Registra en `Historial_Tickets` con acción `asignacion` y detalle `"Agente reasignado manualmente"`.
+
+---
+
+## `PUT /api/tickets/:id/prioridad`
+
+Cambia la prioridad de un ticket. Solo agente y admin.
+
+**Body:**
+```json
+{ "prioridad": "alto" }
+```
+
+**Prioridades válidas:** `critico`, `alto`, `medio`, `bajo`
+
+**Respuesta exitosa `200`:**
+```json
+{ "mensaje": "Prioridad actualizada a \"alto\" correctamente." }
+```
+
+**Respuestas de error:**
+
+| Código | Causa |
+|--------|-------|
+| `400` | Prioridad no válida |
+| `400` | El ticket ya tiene esa prioridad |
+| `403` | Sin permisos (cliente) |
+| `404` | Ticket no encontrado |
+| `500` | Error interno del servidor |
+
+Registra en `Historial_Tickets` con el detalle del cambio (ej: `"Prioridad cambiada de \"medio\" a \"alto\""`).
 
 ---
 
