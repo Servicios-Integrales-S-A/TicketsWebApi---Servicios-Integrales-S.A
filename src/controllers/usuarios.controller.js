@@ -1,5 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { getConnection, sql } = require('../config/db');
+const { enviarCorreo } = require('../config/mailer');
+const { bienvenidaClienteTemplate } = require('../config/emailTemplates');
 
 // =============================================
 // PERFIL PROPIO
@@ -201,14 +203,24 @@ const obtenerUsuario = async (req, res) => {
 
 const crearUsuario = async (req, res) => {
   const { nombre, apellido, email, password, telefono, rol } = req.body;
-  const id_admin = req.usuario.id;
+  const { id: id_creador, rol: rol_creador } = req.usuario;
 
   if (!nombre || !apellido || !email || !password || !rol) {
     return res.status(400).json({ mensaje: 'Nombre, apellido, email, password y rol son requeridos.' });
   }
 
-  if (!['agente', 'admin'].includes(rol)) {
-    return res.status(400).json({ mensaje: 'Solo se pueden crear usuarios con rol agente o admin.' });
+  // Agentes solo pueden crear clientes. Admins pueden crear cualquier rol.
+  const rolesPermitidosAdmin  = ['agente', 'admin', 'cliente'];
+  const rolesPermitidosAgente = ['cliente'];
+
+  const rolesPermitidos = rol_creador === 'admin' ? rolesPermitidosAdmin : rolesPermitidosAgente;
+
+  if (!rolesPermitidos.includes(rol)) {
+    return res.status(403).json({
+      mensaje: rol_creador === 'admin'
+        ? 'Rol no válido. Use: agente, admin o cliente.'
+        : 'Los agentes solo pueden crear usuarios con rol cliente.'
+    });
   }
 
   try {
@@ -232,20 +244,40 @@ const crearUsuario = async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
 
-    await pool.request()
+    const nuevoUsuario = await pool.request()
       .input('nombre', sql.VarChar, nombre)
       .input('apellido', sql.VarChar, apellido)
       .input('email', sql.VarChar, email)
       .input('password', sql.VarChar, hash)
       .input('telefono', sql.VarChar, telefono || null)
       .input('id_rol', sql.UniqueIdentifier, rolResult.recordset[0].id)
-      .input('creado_por', sql.UniqueIdentifier, id_admin)
+      .input('creado_por', sql.UniqueIdentifier, id_creador)
       .query(`
         INSERT INTO Usuarios (id, nombre, apellido, email, password, telefono, id_rol, creado_por)
+        OUTPUT INSERTED.id
         VALUES (NEWID(), @nombre, @apellido, @email, @password, @telefono, @id_rol, @creado_por)
       `);
 
-    res.status(201).json({ mensaje: `Usuario ${rol} creado correctamente.` });
+    const id_nuevo = nuevoUsuario.recordset[0].id;
+
+    // Enviar email de bienvenida solo a clientes
+    if (rol === 'cliente') {
+      try {
+        await enviarCorreo({
+          para: email,
+          asunto: 'Bienvenido al Sistema de Tickets — Servicios Integrales S.A.',
+          html: bienvenidaClienteTemplate({ nombre, email, password }),
+        });
+      } catch (mailError) {
+        console.error('Error al enviar email de bienvenida:', mailError);
+        // No interrumpir la respuesta si el correo falla
+      }
+    }
+
+    res.status(201).json({
+      mensaje: `Usuario ${rol} creado correctamente.`,
+      id: id_nuevo,
+    });
   } catch (error) {
     console.error('Error en crearUsuario:', error);
     res.status(500).json({ mensaje: 'Error interno del servidor.' });

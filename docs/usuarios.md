@@ -7,7 +7,7 @@
 
 El módulo de usuarios gestiona los perfiles, credenciales y administración de todos los usuarios
 del sistema. Está dividido en dos grupos de endpoints: acciones sobre el **perfil propio**
-(cualquier usuario autenticado) y **gestión de usuarios** (exclusivo para administradores).
+(cualquier usuario autenticado) y **gestión de usuarios** (admin y agentes con restricciones).
 
 ---
 
@@ -30,7 +30,7 @@ del sistema. Está dividido en dos grupos de endpoints: acciones sobre el **perf
 | `GET /agentes` | Cualquier usuario autenticado |
 | `GET /` | Solo admin |
 | `GET /:id` | Solo admin |
-| `POST /` | Solo admin |
+| `POST /` | Admin y agente (con restricciones por rol) |
 | `PUT /:id` | Solo admin |
 | `PUT /:id/reset-password` | Solo admin |
 | `PUT /:id/toggle-activo` | Solo admin |
@@ -235,29 +235,52 @@ Retorna los datos de un usuario específico.
 
 ### `POST /api/usuarios`
 
-Crea un nuevo usuario con rol `agente` o `admin`. Los clientes se registran ellos mismos desde `/api/auth/register`.
+Crea un nuevo usuario. El rol del creador determina qué roles puede asignar.
+
+**Acceso:** Admin y Agente (con restricciones)
+
+| Rol del creador | Roles que puede crear |
+|----------------|----------------------|
+| `admin` | `cliente`, `agente`, `admin` |
+| `agente` | Solo `cliente` |
 
 **Body:**
 ```json
 {
   "nombre": "Ana",
   "apellido": "García",
-  "email": "ana.garcia@serviciosintegrales.com",
+  "email": "ana.garcia@ejemplo.com",
   "password": "1234",
   "telefono": "50230002222",
-  "rol": "agente"
+  "rol": "cliente"
 }
 ```
 
 **Campos requeridos:** `nombre`, `apellido`, `email`, `password`, `rol`
-**Roles permitidos:** `agente`, `admin`
+**`telefono`:** opcional
 
-**Respuestas:**
+**Comportamiento al crear un cliente:**
+- Se envía automáticamente un **email de bienvenida** al correo del nuevo cliente con sus credenciales (email y contraseña en texto plano) y un botón para acceder al sistema.
+- El cliente puede cambiar su contraseña desde su perfil en cualquier momento.
+- Si el envío del correo falla, el usuario se crea igualmente y el error se registra solo en el log del servidor.
+
+**Respuesta exitosa `201`:**
+```json
+{
+  "mensaje": "Usuario cliente creado correctamente.",
+  "id": "uuid-del-nuevo-usuario"
+}
+```
+
+> El campo `id` retornado es el UUID del nuevo usuario. El frontend debe usarlo como `id_cliente` si a continuación va a crear un ticket para ese cliente.
+
+**Respuestas de error:**
 
 | Status | Descripción |
 |--------|-------------|
-| `201` | Usuario creado correctamente |
-| `400` | Campos faltantes o rol no permitido |
+| `400` | Campos requeridos faltantes |
+| `403` | El agente intentó crear un rol distinto a `cliente` |
+| `403` | Token inválido o sin permisos |
 | `409` | El email ya está registrado |
 | `500` | Error interno del servidor |
 
@@ -381,6 +404,7 @@ Lista todos los agentes activos. Disponible para cualquier usuario autenticado. 
 | Editar mi perfil | `PUT /perfil` | Yo mismo |
 | Cambiar mi password | `PUT /perfil/cambiar-password` | Yo mismo (requiere password actual) |
 | Resetear password de otro | `PUT /:id/reset-password` | Solo admin (no requiere password actual) |
-| Crear agentes/admins | `POST /` | Solo admin |
-| Registrarse como cliente | `POST /api/auth/register` | Público |
+| Crear agente o admin | `POST /` con `rol: agente/admin` | Solo admin |
+| Crear cliente | `POST /` con `rol: cliente` | Admin y agente |
+| Registrarse como cliente | `POST /api/auth/register` | Público (auto-registro) |
 | Deshabilitar usuario | `PUT /:id/toggle-activo` | Solo admin |
