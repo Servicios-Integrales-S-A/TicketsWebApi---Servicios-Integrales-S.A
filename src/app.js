@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
 const authRoutes       = require('./routes/auth.routes');
@@ -8,11 +9,15 @@ const categoriasRoutes = require('./routes/categorias.routes');
 const reglasRoutes     = require('./routes/reglas.routes');
 const ticketsRoutes        = require('./routes/tickets.routes');
 const integracionesRoutes  = require('./routes/integraciones.routes');
+const swaggerSpec          = require('./config/swagger');
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Documentación Swagger UI
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Rutas
 app.use('/api/auth',       authRoutes);
