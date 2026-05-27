@@ -4,12 +4,12 @@ const listarCategorias = async (req, res) => {
   try {
     const pool = await getConnection();
     const { activo, search, page = 1, limit = 10 } = req.query;
-    const { rol } = req.usuario;
+    const rol = req.usuario?.rol || 'cliente';
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const request = pool.request();
 
-    // Clientes y agentes solo ven categorías activas
+    // Clientes, agentes y usuarios no autenticados solo ven categorías activas
     let whereClause = rol === 'admin' ? 'WHERE 1=1' : 'WHERE activo = 1';
 
     if (rol === 'admin' && activo !== undefined) {

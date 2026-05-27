@@ -4,9 +4,10 @@ const { listarCategorias, obtenerCategoria, crearCategoria, actualizarCategoria,
 
 const router = Router();
 
-router.use(verificarToken);
+// Ruta pública — debe declararse ANTES de router.use(verificarToken)
+router.get('/', listarCategorias);
 
-router.get('/',                    listarCategorias);
+router.use(verificarToken);
 router.get('/:id',                 obtenerCategoria);
 router.post('/',                   soloAdmin, crearCategoria);
 router.put('/:id',                 soloAdmin, actualizarCategoria);
