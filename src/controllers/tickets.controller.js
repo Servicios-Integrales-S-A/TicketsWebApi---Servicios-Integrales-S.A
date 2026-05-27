@@ -1,7 +1,9 @@
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { getConnection, sql } = require('../config/db');
 const { obtenerAgentePorMenorCarga } = require('./reglas.controller');
 const { enviarCorreo } = require('../config/mailer');
-const { ticketCreadoTemplate } = require('../config/emailTemplates');
+const { ticketCreadoTemplate, bienvenidaClienteTemplate } = require('../config/emailTemplates');
 
 // =============================================
 // CREAR TICKET
@@ -699,4 +701,235 @@ const ocultarTicket = async (req, res) => {
   }
 };
 
-module.exports = { crearTicket, listarTickets, obtenerTicket, cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket };
+// =============================================
+// CONSULTA PÚBLICA POR NÚMERO DE TICKET
+// =============================================
+
+const consultarPublico = async (req, res) => {
+  const { numero } = req.params;
+
+  if (!numero || !/^TKT-\d{5}$/i.test(numero.trim())) {
+    return res.status(400).json({ mensaje: 'Número de ticket inválido. Use el formato TKT-XXXXX (ej: TKT-00008).' });
+  }
+
+  try {
+    const pool = await getConnection();
+
+    const ticketResult = await pool.request()
+      .input('numero', sql.VarChar, numero.trim().toUpperCase())
+      .query(`
+        SELECT id, numero_legible, titulo, estado, creado_en, fecha_cierre
+        FROM Tickets
+        WHERE numero_legible = @numero AND oculto = 0
+      `);
+
+    if (ticketResult.recordset.length === 0) {
+      return res.status(404).json({ mensaje: 'Ticket no encontrado.' });
+    }
+
+    const ticket = ticketResult.recordset[0];
+
+    const historialResult = await pool.request()
+      .input('id_ticket', sql.UniqueIdentifier, ticket.id)
+      .query(`
+        SELECT tipo, accion, contenido, fecha
+        FROM (
+          SELECT
+            'historial' AS tipo,
+            h.accion,
+            h.detalle    AS contenido,
+            h.creado_en  AS fecha
+          FROM Historial_Tickets h
+          WHERE h.id_ticket = @id_ticket
+            AND h.accion NOT IN ('asignacion', 'nota_agregada')
+
+          UNION ALL
+
+          SELECT
+            'nota'        AS tipo,
+            'comentario'  AS accion,
+            n.contenido,
+            n.creado_en   AS fecha
+          FROM Notas n
+          WHERE n.id_ticket = @id_ticket AND n.es_interna = 0
+        ) AS historial_publico
+        ORDER BY fecha DESC
+      `);
+
+    res.json({
+      ticket: {
+        numero_legible: ticket.numero_legible,
+        titulo:         ticket.titulo,
+        estado:         ticket.estado,
+        creado_en:      ticket.creado_en,
+        fecha_cierre:   ticket.fecha_cierre,
+      },
+      historial: historialResult.recordset,
+    });
+  } catch (error) {
+    console.error('Error en consultarPublico:', error);
+    res.status(500).json({ mensaje: 'Error interno del servidor.' });
+  }
+};
+
+// =============================================
+// CREAR TICKET PÚBLICO (sin autenticación)
+// =============================================
+
+const crearTicketPublico = async (req, res) => {
+  const { titulo, descripcion, id_categoria, email, nombre, apellido, telefono } = req.body;
+
+  if (!titulo || !descripcion || !id_categoria || !email || !nombre || !apellido) {
+    return res.status(400).json({ mensaje: 'titulo, descripcion, id_categoria, email, nombre y apellido son requeridos.' });
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ mensaje: 'El formato del correo electrónico es inválido.' });
+  }
+
+  try {
+    const pool = await getConnection();
+
+    // Verificar categoría
+    const categoriaResult = await pool.request()
+      .input('id_categoria', sql.UniqueIdentifier, id_categoria)
+      .query('SELECT id, nombre, prioridad_default FROM Categorias WHERE id = @id_categoria AND activo = 1');
+
+    if (categoriaResult.recordset.length === 0) {
+      return res.status(400).json({ mensaje: 'La categoría no existe o está deshabilitada.' });
+    }
+
+    const { nombre: nombre_categoria, prioridad_default: prioridad } = categoriaResult.recordset[0];
+
+    // Buscar si el email ya está registrado
+    const usuarioExistente = await pool.request()
+      .input('email', sql.VarChar, email.trim().toLowerCase())
+      .query(`
+        SELECT u.id, u.nombre, r.nombre AS rol, u.activo
+        FROM Usuarios u
+        INNER JOIN Roles r ON r.id = u.id_rol
+        WHERE u.email = @email
+      `);
+
+    let id_cliente;
+    let nombreCliente;
+    let esNuevoUsuario = false;
+    let tempPassword = null;
+
+    if (usuarioExistente.recordset.length > 0) {
+      const usuario = usuarioExistente.recordset[0];
+      if (usuario.rol !== 'cliente' || !usuario.activo) {
+        return res.status(400).json({ mensaje: 'El correo ya está registrado pero no corresponde a una cuenta de cliente activa.' });
+      }
+      id_cliente    = usuario.id;
+      nombreCliente = usuario.nombre;
+    } else {
+      // Crear nuevo usuario cliente
+      const rolResult = await pool.request()
+        .input('nombre_rol', sql.VarChar, 'cliente')
+        .query('SELECT id FROM Roles WHERE nombre = @nombre_rol');
+
+      if (rolResult.recordset.length === 0) {
+        return res.status(500).json({ mensaje: 'Error de configuración del sistema.' });
+      }
+
+      tempPassword = crypto.randomBytes(5).toString('hex').toUpperCase();
+      const hash   = await bcrypt.hash(tempPassword, 10);
+
+      const nuevoUsuario = await pool.request()
+        .input('nombre',   sql.VarChar,        nombre.trim())
+        .input('apellido', sql.VarChar,         apellido.trim())
+        .input('email',    sql.VarChar,         email.trim().toLowerCase())
+        .input('password', sql.VarChar,         hash)
+        .input('telefono', sql.VarChar,         telefono?.trim() || null)
+        .input('id_rol',   sql.UniqueIdentifier, rolResult.recordset[0].id)
+        .query(`
+          INSERT INTO Usuarios (id, nombre, apellido, email, password, telefono, id_rol)
+          OUTPUT INSERTED.id
+          VALUES (NEWID(), @nombre, @apellido, @email, @password, @telefono, @id_rol)
+        `);
+
+      id_cliente    = nuevoUsuario.recordset[0].id;
+      nombreCliente = nombre.trim();
+      esNuevoUsuario = true;
+    }
+
+    // Asignación automática de agente
+    const id_agente = await obtenerAgentePorMenorCarga(pool, id_categoria, prioridad);
+
+    // Crear el ticket
+    const ticketResult = await pool.request()
+      .input('titulo',       sql.VarChar,         titulo)
+      .input('descripcion',  sql.Text,             descripcion)
+      .input('canal',        sql.VarChar,          'forms')
+      .input('prioridad',    sql.VarChar,          prioridad)
+      .input('id_categoria', sql.UniqueIdentifier, id_categoria)
+      .input('id_cliente',   sql.UniqueIdentifier, id_cliente)
+      .input('id_agente',    sql.UniqueIdentifier, id_agente)
+      .input('creado_por',   sql.UniqueIdentifier, id_cliente)
+      .query(`
+        INSERT INTO Tickets (id, titulo, descripcion, canal, prioridad, id_categoria, id_cliente, id_agente, creado_por)
+        OUTPUT INSERTED.id, INSERTED.numero_legible
+        VALUES (NEWID(), @titulo, @descripcion, @canal, @prioridad, @id_categoria, @id_cliente, @id_agente, @creado_por)
+      `);
+
+    const ticket = ticketResult.recordset[0];
+
+    // Registrar creación en historial
+    await pool.request()
+      .input('id_ticket',  sql.UniqueIdentifier, ticket.id)
+      .input('id_usuario', sql.UniqueIdentifier, id_cliente)
+      .query(`
+        INSERT INTO Historial_Tickets (id, id_ticket, id_usuario, accion, detalle)
+        VALUES (NEWID(), @id_ticket, @id_usuario, 'creacion', 'Ticket creado por formulario público')
+      `);
+
+    if (id_agente) {
+      await pool.request()
+        .input('id_ticket',  sql.UniqueIdentifier, ticket.id)
+        .input('id_usuario', sql.UniqueIdentifier, id_cliente)
+        .query(`
+          INSERT INTO Historial_Tickets (id, id_ticket, id_usuario, accion, detalle)
+          VALUES (NEWID(), @id_ticket, @id_usuario, 'asignacion', 'Agente asignado automáticamente por menor carga')
+        `);
+    }
+
+    // Enviar correos
+    try {
+      if (esNuevoUsuario) {
+        await enviarCorreo({
+          para:   email,
+          asunto: 'Bienvenido al Sistema de Tickets — Servicios Integrales S.A.',
+          html:   bienvenidaClienteTemplate({ nombre: nombreCliente, email, password: tempPassword }),
+        });
+      }
+
+      await enviarCorreo({
+        para:   email,
+        asunto: `Ticket ${ticket.numero_legible} registrado — Servicios Integrales S.A.`,
+        html:   ticketCreadoTemplate({
+          nombre:          nombreCliente,
+          numero_legible:  ticket.numero_legible,
+          titulo,
+          descripcion,
+          categoria:       nombre_categoria,
+          agente_asignado: !!id_agente,
+        }),
+      });
+    } catch (mailError) {
+      console.error('Error al enviar email de confirmación (formulario público):', mailError);
+    }
+
+    res.status(201).json({
+      mensaje:         'Ticket creado correctamente.',
+      numero_legible:  ticket.numero_legible,
+      es_nuevo_usuario: esNuevoUsuario,
+    });
+  } catch (error) {
+    console.error('Error en crearTicketPublico:', error);
+    res.status(500).json({ mensaje: 'Error interno del servidor.' });
+  }
+};
+
+module.exports = { crearTicket, listarTickets, obtenerTicket, cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket, consultarPublico, crearTicketPublico };

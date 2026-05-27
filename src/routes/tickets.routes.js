@@ -2,11 +2,15 @@ const { Router } = require('express');
 const { verificarToken, soloAgente } = require('../middlewares/auth.middleware');
 const {
   crearTicket, listarTickets, obtenerTicket,
-  cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket,
+  cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket, consultarPublico, crearTicketPublico,
 } = require('../controllers/tickets.controller');
 const { agregarNota, listarNotas, listarHistorial } = require('../controllers/notas.controller');
 
 const router = Router();
+
+// Rutas públicas — deben declararse ANTES de router.use(verificarToken)
+router.get('/consulta/:numero', consultarPublico);
+router.post('/publico',         crearTicketPublico);
 
 router.use(verificarToken);
 
