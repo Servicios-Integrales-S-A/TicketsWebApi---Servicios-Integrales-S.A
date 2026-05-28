@@ -189,9 +189,32 @@ const crearTicket = async (req, res) => {
 // LISTAR TICKETS
 // =============================================
 
+const buildOrderClause = (orderBy, orderDir) => {
+  const dir = orderDir === 'desc' ? 'DESC' : 'ASC';
+  switch (orderBy) {
+    case 'estado':
+      return `CASE t.estado
+        WHEN 'abierto'     THEN 1
+        WHEN 'en_progreso' THEN 2
+        WHEN 'resuelto'    THEN 3
+        WHEN 'cerrado'     THEN 4
+        ELSE 5 END ${dir}, t.creado_en DESC`;
+    case 'creado_en':
+      return `t.creado_en ${dir}`;
+    case 'prioridad':
+    default:
+      return `CASE t.prioridad
+        WHEN 'critico' THEN 1
+        WHEN 'alto'    THEN 2
+        WHEN 'medio'   THEN 3
+        WHEN 'bajo'    THEN 4
+        ELSE 5 END ${dir}, t.creado_en DESC`;
+  }
+};
+
 const listarTickets = async (req, res) => {
   const { id: id_usuario, rol } = req.usuario;
-  const { estado, prioridad, canal, id_categoria, id_cliente, id_agente: id_agente_filtro, buscar, buscar_cliente, buscar_agente, page = 1, limit = 10 } = req.query;
+  const { estado, prioridad, canal, id_categoria, id_cliente, id_agente: id_agente_filtro, sin_agente, buscar, buscar_cliente, buscar_agente, orderBy, orderDir, page = 1, limit = 10 } = req.query;
 
   try {
     const pool     = await getConnection();
@@ -212,9 +235,14 @@ const listarTickets = async (req, res) => {
       request.input('id_usuario', sql.UniqueIdentifier, id_usuario);
       rCount.input('id_usuario', sql.UniqueIdentifier, id_usuario);
     } else if (rol === 'agente') {
-      where += ' AND t.id_agente = @id_usuario';
-      request.input('id_usuario', sql.UniqueIdentifier, id_usuario);
-      rCount.input('id_usuario', sql.UniqueIdentifier, id_usuario);
+      if (sin_agente === 'true') {
+        // Agente busca tickets sin asignar para tomar uno
+        where += ' AND t.id_agente IS NULL';
+      } else {
+        where += ' AND t.id_agente = @id_usuario';
+        request.input('id_usuario', sql.UniqueIdentifier, id_usuario);
+        rCount.input('id_usuario', sql.UniqueIdentifier, id_usuario);
+      }
     }
     // admin ve todos, sin filtro adicional
 
@@ -249,6 +277,10 @@ const listarTickets = async (req, res) => {
       where += ' AND t.id_agente = @id_agente_filtro';
       request.input('id_agente_filtro', sql.UniqueIdentifier, id_agente_filtro);
       rCount.input('id_agente_filtro', sql.UniqueIdentifier, id_agente_filtro);
+    }
+    // Filtro tickets sin agente asignado — solo admin
+    if (sin_agente === 'true' && rol === 'admin') {
+      where += ' AND t.id_agente IS NULL';
     }
     if (buscar) {
       where += ' AND (t.titulo LIKE @buscar OR t.numero_legible LIKE @buscar)';
@@ -294,14 +326,7 @@ const listarTickets = async (req, res) => {
       LEFT JOIN Usuarios   uc ON uc.id = t.id_cliente
       LEFT JOIN Usuarios   ua ON ua.id = t.id_agente
       ${where}
-      ORDER BY
-        CASE t.prioridad
-          WHEN 'critico' THEN 1
-          WHEN 'alto'    THEN 2
-          WHEN 'medio'   THEN 3
-          WHEN 'bajo'    THEN 4
-        END,
-        t.creado_en DESC
+      ORDER BY ${buildOrderClause(orderBy, orderDir)}
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `);
 
