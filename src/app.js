@@ -3,13 +3,14 @@ const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
-const authRoutes       = require('./routes/auth.routes');
-const usuariosRoutes   = require('./routes/usuarios.routes');
-const categoriasRoutes = require('./routes/categorias.routes');
-const reglasRoutes     = require('./routes/reglas.routes');
-const ticketsRoutes        = require('./routes/tickets.routes');
-const integracionesRoutes  = require('./routes/integraciones.routes');
-const swaggerSpec          = require('./config/swagger');
+const authRoutes              = require('./routes/auth.routes');
+const usuariosRoutes          = require('./routes/usuarios.routes');
+const categoriasRoutes        = require('./routes/categorias.routes');
+const reglasRoutes            = require('./routes/reglas.routes');
+const ticketsRoutes           = require('./routes/tickets.routes');
+const integracionesRoutes     = require('./routes/integraciones.routes');
+const notificacionesRoutes    = require('./routes/notificaciones.routes');
+const swaggerSpec             = require('./config/swagger');
 
 const app = express();
 
@@ -20,12 +21,13 @@ app.use(express.json());
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Rutas
-app.use('/api/auth',       authRoutes);
-app.use('/api/usuarios',   usuariosRoutes);
-app.use('/api/categorias', categoriasRoutes);
-app.use('/api/reglas',     reglasRoutes);
-app.use('/api/tickets',        ticketsRoutes);
-app.use('/api/integraciones',  integracionesRoutes);
+app.use('/api/auth',            authRoutes);
+app.use('/api/usuarios',        usuariosRoutes);
+app.use('/api/categorias',      categoriasRoutes);
+app.use('/api/reglas',          reglasRoutes);
+app.use('/api/tickets',         ticketsRoutes);
+app.use('/api/integraciones',   integracionesRoutes);
+app.use('/api/notificaciones',  notificacionesRoutes);
 
 // Ruta de salud
 app.get('/', (req, res) => {

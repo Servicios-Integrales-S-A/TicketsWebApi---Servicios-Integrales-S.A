@@ -3,6 +3,7 @@ const { verificarToken, soloAgente } = require('../middlewares/auth.middleware')
 const {
   crearTicket, listarTickets, obtenerTicket,
   cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket, consultarPublico, crearTicketPublico,
+  obtenerParticipantes,
 } = require('../controllers/tickets.controller');
 const { agregarNota, listarNotas, listarHistorial } = require('../controllers/notas.controller');
 
@@ -23,9 +24,10 @@ router.put('/:id/asignar',         soloAgente, asignarAgente);
 router.put('/:id/prioridad',       soloAgente, cambiarPrioridad);
 router.put('/:id/ocultar',         ocultarTicket);
 
-// Notas e historial
+// Notas, historial y participantes
 router.get('/:id/notas',           listarNotas);
 router.post('/:id/notas',          agregarNota);
 router.get('/:id/historial',       listarHistorial);
+router.get('/:id/participantes',   obtenerParticipantes);
 
 module.exports = router;
