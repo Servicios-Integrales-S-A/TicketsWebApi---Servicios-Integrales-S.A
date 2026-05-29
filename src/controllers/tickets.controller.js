@@ -4,6 +4,7 @@ const { getConnection, sql } = require('../config/db');
 const { obtenerAgentePorMenorCarga } = require('./reglas.controller');
 const { enviarCorreo } = require('../config/mailer');
 const { ticketCreadoTemplate, bienvenidaClienteTemplate } = require('../config/emailTemplates');
+const { crearNotificacion, notificarAdmins } = require('../services/notificaciones.service');
 
 // =============================================
 // CREAR TICKET
@@ -169,6 +170,30 @@ const crearTicket = async (req, res) => {
       }
     } catch (mailError) {
       console.error('Error al enviar email de confirmación de ticket:', mailError);
+    }
+
+    // Notificaciones in-app
+    try {
+      await notificarAdmins(pool, 'ticket_creado',
+        `Nuevo ticket ${ticket.numero_legible}`,
+        `Se ha creado el ticket "${titulo}" (${nombre_categoria}).`,
+        ticket.id, id_usuario
+      );
+      if (id_agente && id_agente !== id_usuario) {
+        await crearNotificacion(pool, id_agente, 'ticket_asignado',
+          `Ticket ${ticket.numero_legible} asignado`,
+          `Se te ha asignado el ticket "${titulo}".`,
+          ticket.id
+        );
+      } else if (!id_agente) {
+        await notificarAdmins(pool, 'sin_asignar',
+          `Ticket ${ticket.numero_legible} sin agente`,
+          `El ticket "${titulo}" fue creado sin agente disponible.`,
+          ticket.id, id_usuario
+        );
+      }
+    } catch (notifError) {
+      console.error('Error al crear notificaciones de ticket nuevo:', notifError);
     }
 
     res.status(201).json({
@@ -414,13 +439,14 @@ const cambiarEstado = async (req, res) => {
 
     const existe = await pool.request()
       .input('id', sql.UniqueIdentifier, id)
-      .query('SELECT id, estado FROM Tickets WHERE id = @id');
+      .query('SELECT id, estado, numero_legible, titulo, id_cliente, id_agente FROM Tickets WHERE id = @id');
 
     if (existe.recordset.length === 0) {
       return res.status(404).json({ mensaje: 'Ticket no encontrado.' });
     }
 
-    const estadoAnterior = existe.recordset[0].estado;
+    const ticketActual = existe.recordset[0];
+    const estadoAnterior = ticketActual.estado;
     if (estadoAnterior === estado) {
       return res.status(400).json({ mensaje: `El ticket ya se encuentra en estado "${estado}".` });
     }
@@ -450,6 +476,30 @@ const cambiarEstado = async (req, res) => {
         VALUES (NEWID(), @id_ticket, @id_usuario, 'cambio_estado', @detalle)
       `);
 
+    // Notificaciones in-app
+    try {
+      const { numero_legible, titulo: tituloTicket, id_cliente, id_agente } = ticketActual;
+      const mensajeNotif = `El ticket ${numero_legible} "${tituloTicket}" cambió de estado: ${estadoAnterior} → ${estado}.`;
+
+      if (id_cliente && id_cliente !== id_usuario) {
+        await crearNotificacion(pool, id_cliente, 'cambio_estado',
+          `Ticket ${numero_legible}: estado actualizado`, mensajeNotif, id);
+      }
+      if (id_agente && id_agente !== id_usuario) {
+        await crearNotificacion(pool, id_agente, 'cambio_estado',
+          `Ticket ${numero_legible}: estado actualizado`, mensajeNotif, id);
+      }
+      if (estado === 'resuelto' || estado === 'cerrado') {
+        await notificarAdmins(pool, 'ticket_completado',
+          `Ticket ${numero_legible} ${estado}`,
+          `El ticket "${tituloTicket}" fue marcado como ${estado}.`,
+          id, id_usuario
+        );
+      }
+    } catch (notifError) {
+      console.error('Error al crear notificaciones de cambio de estado:', notifError);
+    }
+
     res.json({ mensaje: `Estado actualizado a "${estado}" correctamente.` });
   } catch (error) {
     console.error('Error en cambiarEstado:', error);
@@ -475,7 +525,7 @@ const asignarAgente = async (req, res) => {
 
     const ticketResult = await pool.request()
       .input('id', sql.UniqueIdentifier, id)
-      .query('SELECT id FROM Tickets WHERE id = @id');
+      .query('SELECT id, numero_legible, titulo FROM Tickets WHERE id = @id');
 
     if (ticketResult.recordset.length === 0) {
       return res.status(404).json({ mensaje: 'Ticket no encontrado.' });
@@ -512,6 +562,20 @@ const asignarAgente = async (req, res) => {
         INSERT INTO Historial_Tickets (id, id_ticket, id_usuario, accion, detalle)
         VALUES (NEWID(), @id_ticket, @id_usuario, 'asignacion', 'Agente reasignado manualmente')
       `);
+
+    // Notificación in-app al agente asignado (salvo que se asigne a sí mismo)
+    try {
+      if (id_agente !== id_usuario) {
+        const { numero_legible, titulo: tituloTicket } = ticketResult.recordset[0];
+        await crearNotificacion(pool, id_agente, 'ticket_asignado',
+          `Ticket ${numero_legible} asignado`,
+          `Se te ha asignado el ticket "${tituloTicket}".`,
+          id
+        );
+      }
+    } catch (notifError) {
+      console.error('Error al crear notificación de asignación:', notifError);
+    }
 
     res.json({ mensaje: 'Agente asignado correctamente.' });
   } catch (error) {
@@ -596,7 +660,7 @@ const actualizarTicket = async (req, res) => {
 
     const existe = await pool.request()
       .input('id', sql.UniqueIdentifier, id)
-      .query('SELECT id, estado, prioridad FROM Tickets WHERE id = @id');
+      .query('SELECT id, estado, prioridad, numero_legible, titulo, id_cliente, id_agente FROM Tickets WHERE id = @id');
 
     if (existe.recordset.length === 0) {
       return res.status(404).json({ mensaje: 'Ticket no encontrado.' });
@@ -671,6 +735,41 @@ const actualizarTicket = async (req, res) => {
           INSERT INTO Historial_Tickets (id, id_ticket, id_usuario, accion, detalle)
           VALUES (NEWID(), @id_ticket, @id_usuario, @accion, @detalle)
         `);
+    }
+
+    // Notificaciones in-app
+    try {
+      const { numero_legible, titulo: tituloTicket, id_cliente, id_agente: id_agente_actual } = actual;
+      const id_agente_final = id_agente || id_agente_actual;
+
+      if (estado) {
+        const mensajeNotif = `El ticket ${numero_legible} "${tituloTicket}" cambió de estado: ${actual.estado} → ${estado}.`;
+        if (id_cliente && id_cliente !== id_usuario) {
+          await crearNotificacion(pool, id_cliente, 'cambio_estado',
+            `Ticket ${numero_legible}: estado actualizado`, mensajeNotif, id);
+        }
+        if (id_agente_final && id_agente_final !== id_usuario) {
+          await crearNotificacion(pool, id_agente_final, 'cambio_estado',
+            `Ticket ${numero_legible}: estado actualizado`, mensajeNotif, id);
+        }
+        if (estado === 'resuelto' || estado === 'cerrado') {
+          await notificarAdmins(pool, 'ticket_completado',
+            `Ticket ${numero_legible} ${estado}`,
+            `El ticket "${tituloTicket}" fue marcado como ${estado}.`,
+            id, id_usuario
+          );
+        }
+      }
+
+      if (id_agente && id_agente !== id_usuario) {
+        await crearNotificacion(pool, id_agente, 'ticket_asignado',
+          `Ticket ${numero_legible} asignado`,
+          `Se te ha asignado el ticket "${tituloTicket}".`,
+          id
+        );
+      }
+    } catch (notifError) {
+      console.error('Error al crear notificaciones en actualizarTicket:', notifError);
     }
 
     res.json({ mensaje: 'Ticket actualizado correctamente.' });
@@ -946,6 +1045,30 @@ const crearTicketPublico = async (req, res) => {
       console.error('Error al enviar email de confirmación (formulario público):', mailError);
     }
 
+    // Notificaciones in-app
+    try {
+      await notificarAdmins(pool, 'ticket_creado',
+        `Nuevo ticket ${ticket.numero_legible}`,
+        `Se ha creado el ticket "${titulo}" (${nombre_categoria}) vía formulario público.`,
+        ticket.id
+      );
+      if (id_agente) {
+        await crearNotificacion(pool, id_agente, 'ticket_asignado',
+          `Ticket ${ticket.numero_legible} asignado`,
+          `Se te ha asignado el ticket "${titulo}".`,
+          ticket.id
+        );
+      } else {
+        await notificarAdmins(pool, 'sin_asignar',
+          `Ticket ${ticket.numero_legible} sin agente`,
+          `El ticket "${titulo}" fue creado sin agente disponible.`,
+          ticket.id
+        );
+      }
+    } catch (notifError) {
+      console.error('Error al crear notificaciones (formulario público):', notifError);
+    }
+
     res.status(201).json({
       mensaje:         'Ticket creado correctamente.',
       numero_legible:  ticket.numero_legible,
@@ -957,4 +1080,64 @@ const crearTicketPublico = async (req, res) => {
   }
 };
 
-module.exports = { crearTicket, listarTickets, obtenerTicket, cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket, consultarPublico, crearTicketPublico };
+// =============================================
+// PARTICIPANTES DEL TICKET (para mention picker)
+// =============================================
+
+const obtenerParticipantes = async (req, res) => {
+  const { id } = req.params;
+  const { id: id_usuario, rol } = req.usuario;
+
+  try {
+    const pool = await getConnection();
+
+    const ticketResult = await pool.request()
+      .input('id', sql.UniqueIdentifier, id)
+      .query('SELECT id, id_cliente, id_agente FROM Tickets WHERE id = @id');
+
+    if (ticketResult.recordset.length === 0) {
+      return res.status(404).json({ mensaje: 'Ticket no encontrado.' });
+    }
+
+    const ticket = ticketResult.recordset[0];
+
+    if (rol === 'cliente' && ticket.id_cliente !== id_usuario) {
+      return res.status(403).json({ mensaje: 'No tienes acceso a este ticket.' });
+    }
+    if (rol === 'agente' && ticket.id_agente !== id_usuario) {
+      return res.status(403).json({ mensaje: 'No tienes acceso a este ticket.' });
+    }
+
+    const request = pool.request()
+      .input('id_cliente', sql.UniqueIdentifier, ticket.id_cliente)
+      .input('id_agente',  sql.UniqueIdentifier, ticket.id_agente);
+
+    const result = await request.query(`
+      SELECT u.id, u.nombre, u.apellido, u.username, r.nombre AS rol
+      FROM Usuarios u
+      INNER JOIN Roles r ON r.id = u.id_rol
+      WHERE (
+        u.id = @id_cliente
+        OR (@id_agente IS NOT NULL AND u.id = @id_agente)
+        OR r.nombre = 'admin'
+      )
+      AND u.activo = 1
+      ORDER BY r.nombre, u.nombre
+    `);
+
+    // Excluir al usuario actual (no puede mencionarse a sí mismo)
+    // El cliente solo puede mencionar al agente asignado
+    const participantes = result.recordset.filter(p => {
+      if (p.id === id_usuario) return false;
+      if (rol === 'cliente') return p.id === ticket.id_agente;
+      return true;
+    });
+
+    res.json(participantes);
+  } catch (error) {
+    console.error('Error en obtenerParticipantes:', error);
+    res.status(500).json({ mensaje: 'Error interno del servidor.' });
+  }
+};
+
+module.exports = { crearTicket, listarTickets, obtenerTicket, cambiarEstado, asignarAgente, cambiarPrioridad, ocultarTicket, actualizarTicket, consultarPublico, crearTicketPublico, obtenerParticipantes };

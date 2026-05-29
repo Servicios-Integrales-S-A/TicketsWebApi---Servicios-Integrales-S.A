@@ -1,6 +1,18 @@
 const { getConnection, sql } = require('../config/db');
 const { enviarCorreo } = require('../config/mailer');
 const { nuevaRespuestaTemplate } = require('../config/emailTemplates');
+const { crearNotificacion, notificarAdmins } = require('../services/notificaciones.service');
+
+// Extrae los @usernames únicos del contenido de una nota
+const extraerMenciones = (contenido) => {
+  const regex = /@([\w.]+)/g;
+  const usernames = new Set();
+  let m;
+  while ((m = regex.exec(contenido)) !== null) {
+    usernames.add(m[1].toLowerCase());
+  }
+  return [...usernames];
+};
 
 // =============================================
 // HELPER — verificar acceso al ticket
@@ -81,7 +93,7 @@ const agregarNota = async (req, res) => {
         WHERE id = @id_ticket
       `);
 
-    // Notificar al cliente por email solo si la nota es pública y la escribió un agente/admin
+    // Email al cliente si la nota es pública y la escribió un agente/admin
     if (!esInterna && rol !== 'cliente') {
       try {
         const clienteData = await pool.request()
@@ -111,6 +123,84 @@ const agregarNota = async (req, res) => {
       } catch (mailError) {
         console.error('Error al enviar notificación de nueva respuesta:', mailError);
       }
+    }
+
+    // Notificaciones in-app
+    try {
+      const ticketData = await pool.request()
+        .input('id_ticket', sql.UniqueIdentifier, id_ticket)
+        .query('SELECT numero_legible, titulo, id_cliente, id_agente FROM Tickets WHERE id = @id_ticket');
+
+      if (ticketData.recordset.length > 0) {
+        const { numero_legible, titulo: tituloTicket, id_cliente, id_agente } = ticketData.recordset[0];
+        const tituloNotif = `Nueva nota en ticket ${numero_legible}`;
+        const mensajeNotif = `Se agregó una nota en el ticket "${tituloTicket}".`;
+
+        if (rol === 'cliente') {
+          // El cliente escribió → notificar al agente asignado y a los admins
+          if (id_agente && id_agente !== id_usuario) {
+            await crearNotificacion(pool, id_agente, 'nueva_nota', tituloNotif, mensajeNotif, id_ticket);
+          }
+          await notificarAdmins(pool, 'nueva_nota', tituloNotif, mensajeNotif, id_ticket, id_usuario);
+        } else if (!esInterna) {
+          // Agente/admin escribió nota pública → notificar al cliente
+          if (id_cliente && id_cliente !== id_usuario) {
+            await crearNotificacion(pool, id_cliente, 'nueva_nota', tituloNotif, mensajeNotif, id_ticket);
+          }
+        } else {
+          // Nota interna de agente/admin → solo notificar a los demás admins
+          await notificarAdmins(pool, 'nueva_nota', tituloNotif, mensajeNotif, id_ticket, id_usuario);
+        }
+
+        // Procesar @menciones — solo participantes del ticket son válidos
+        const usernames = extraerMenciones(contenido);
+        if (usernames.length > 0) {
+          for (const username of usernames) {
+            const mencionadoResult = await pool.request()
+              .input('username', sql.VarChar, username)
+              .query(`
+                SELECT u.id, r.nombre AS rol
+                FROM Usuarios u
+                INNER JOIN Roles r ON r.id = u.id_rol
+                WHERE u.username = @username AND u.activo = 1
+              `);
+
+            if (mencionadoResult.recordset.length === 0) continue;
+
+            const mencionado = mencionadoResult.recordset[0];
+
+            // Verificar que sea participante del ticket: cliente, agente asignado o admin
+            const esParticipante =
+              mencionado.id === id_cliente ||
+              mencionado.id === id_agente  ||
+              mencionado.rol === 'admin';
+
+            if (!esParticipante || mencionado.id === id_usuario) continue;
+
+            // Registrar la mención
+            await pool.request()
+              .input('id_nota',    sql.UniqueIdentifier, nota.id)
+              .input('id_usuario', sql.UniqueIdentifier, mencionado.id)
+              .query(`
+                IF NOT EXISTS (
+                  SELECT 1 FROM Nota_Menciones
+                  WHERE id_nota = @id_nota AND id_usuario_mencionado = @id_usuario
+                )
+                INSERT INTO Nota_Menciones (id, id_nota, id_usuario_mencionado)
+                VALUES (NEWID(), @id_nota, @id_usuario)
+              `);
+
+            // Notificar al usuario mencionado
+            await crearNotificacion(pool, mencionado.id, 'mencion',
+              `Te mencionaron en ticket ${numero_legible}`,
+              `Te mencionaron en una nota del ticket "${tituloTicket}".`,
+              id_ticket
+            );
+          }
+        }
+      }
+    } catch (notifError) {
+      console.error('Error al crear notificaciones de nota:', notifError);
     }
 
     res.status(201).json({
